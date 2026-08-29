@@ -314,7 +314,20 @@ npm run curate      # size filter → dedup → largest cluster → outlier trim
 npm run negatives   # build the LFW negative set (~45 min, resumable)
 npm run calibrate   # sweep thresholds, emit extension/public/targets.json
 npm run audit       # re-test the threshold against Indian faces
+
+cd extension && npm run build   # REQUIRED — see below
 ```
+
+**`calibrate` alone does not change what runs in Chrome.** It writes
+`extension/public/targets.json`, but the browser loads from
+`extension/.output/chrome-mv3/`, which is only refreshed by a build. Skip the
+rebuild and you will be testing the old threshold while reading new numbers from
+the terminal — the most confusing possible failure, because nothing errors. After
+rebuilding, also hit reload on the extension at `chrome://extensions`.
+
+Changing the target set means re-running the whole chain: `embed` → `curate` →
+`calibrate` → build. The threshold is derived from the embeddings, so editing one
+without the other leaves them inconsistent.
 
 `curate` and `calibrate` both accept comma-separated sources, so additional photo
 sets and negative sets can be folded in without touching the code.
