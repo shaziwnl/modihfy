@@ -10,6 +10,92 @@ the machine — which is also what makes it free to run.
 
 ---
 
+## How to install
+
+### 1. Chrome Web Store
+
+**Coming soon.**
+
+### 2. Local setup
+
+Nothing here talks to a server, so a local install is the full product — not a
+degraded version.
+
+**You will need** [Node.js](https://nodejs.org) **22.18 or newer** (`node --version`
+to check) and Chrome or any Chromium browser — Brave, Edge and Arc all work. The
+version floor is for the offline pipeline, which relies on Node running TypeScript
+directly; building and installing the extension alone works on older Node.
+
+**Step 1 — get the code**
+
+```bash
+git clone https://github.com/shaziwnl/modihfy.git
+cd modihfy
+```
+
+**Step 2 — install dependencies**
+
+```bash
+npm install
+cd extension && npm install && cd ..
+```
+
+**Step 3 — copy the face models into place**
+
+The three model files (~12 MB) ship inside the face-api package rather than in this
+repo, so they get copied across at setup:
+
+```bash
+mkdir -p models extension/public/models
+cp node_modules/@vladmandic/face-api/model/{ssd_mobilenetv1,face_landmark_68,face_recognition}_model* models/
+cp models/* extension/public/models/
+```
+
+**Step 4 — build**
+
+```bash
+cd extension && npm run build && cd ..
+```
+
+This creates `extension/.output/chrome-mv3/` — the folder you load into Chrome.
+
+**Step 5 — load it into Chrome**
+
+1. Open a new tab and go to **`chrome://extensions`**
+2. Turn on **Developer mode** — the toggle is in the **top-right** corner
+3. Three buttons appear on the left. Click **Load unpacked**
+4. In the file picker, select `extension/.output/chrome-mv3`
+5. Click **Select**
+
+modihfy now appears in your extensions list, and its icon in the toolbar.
+
+> **The folder looks like it isn't there.** `.output` starts with a dot, so macOS
+> Finder hides it by default. In the file picker press
+> <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd>, paste the full path to
+> `extension/.output/chrome-mv3`, and hit Enter. (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>.</kbd>
+> toggles hidden files if you would rather click through.) Select the
+> **`chrome-mv3`** folder itself, not `.output` — the manifest lives one level down.
+
+**Step 6 — turn it on**
+
+It installs in log-only mode and will not change any page until you say so. Click the
+modihfy icon in the toolbar and tick **Replace matched images**, then reload whatever
+tab you want it to act on. See [Using it](#using-it) for why it starts that way.
+
+### Updating after a code change
+
+Rebuild, then hit the **reload** (↻) button on the modihfy card at
+`chrome://extensions`:
+
+```bash
+cd extension && npm run build
+```
+
+`npm run dev` instead of `build` gives you a watch mode that rebuilds and reloads
+automatically while you work.
+
+---
+
 ## How it works
 
 **No model is trained.** A pretrained face-embedding network (dlib ResNet-34, via
@@ -272,90 +358,6 @@ and silently invalidates the threshold. That swap requires re-running
 `npm run calibrate`, not just changing one line.
 
 ---
-
-## How to install
-
-### 1. Chrome Web Store
-
-**Coming soon.**
-
-### 2. Local setup
-
-Nothing here talks to a server, so a local install is the full product — not a
-degraded version.
-
-**You will need** [Node.js](https://nodejs.org) **22.18 or newer** (`node --version`
-to check) and Chrome or any Chromium browser — Brave, Edge and Arc all work. The
-version floor is for the offline pipeline, which relies on Node running TypeScript
-directly; building and installing the extension alone works on older Node.
-
-**Step 1 — get the code**
-
-```bash
-git clone https://github.com/shaziwnl/modihfy.git
-cd modihfy
-```
-
-**Step 2 — install dependencies**
-
-```bash
-npm install
-cd extension && npm install && cd ..
-```
-
-**Step 3 — copy the face models into place**
-
-The three model files (~12 MB) ship inside the face-api package rather than in this
-repo, so they get copied across at setup:
-
-```bash
-mkdir -p models extension/public/models
-cp node_modules/@vladmandic/face-api/model/{ssd_mobilenetv1,face_landmark_68,face_recognition}_model* models/
-cp models/* extension/public/models/
-```
-
-**Step 4 — build**
-
-```bash
-cd extension && npm run build && cd ..
-```
-
-This creates `extension/.output/chrome-mv3/` — the folder you load into Chrome.
-
-**Step 5 — load it into Chrome**
-
-1. Open a new tab and go to **`chrome://extensions`**
-2. Turn on **Developer mode** — the toggle is in the **top-right** corner
-3. Three buttons appear on the left. Click **Load unpacked**
-4. In the file picker, select `extension/.output/chrome-mv3`
-5. Click **Select**
-
-modihfy now appears in your extensions list, and its icon in the toolbar.
-
-> **The folder looks like it isn't there.** `.output` starts with a dot, so macOS
-> Finder hides it by default. In the file picker press
-> <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd>, paste the full path to
-> `extension/.output/chrome-mv3`, and hit Enter. (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>.</kbd>
-> toggles hidden files if you would rather click through.) Select the
-> **`chrome-mv3`** folder itself, not `.output` — the manifest lives one level down.
-
-**Step 6 — turn it on**
-
-It installs in log-only mode and will not change any page until you say so. Click the
-modihfy icon in the toolbar and tick **Replace matched images**, then reload whatever
-tab you want it to act on. See [Using it](#using-it) for why it starts that way.
-
-### Updating after a code change
-
-Rebuild, then hit the **reload** (↻) button on the modihfy card at
-`chrome://extensions`:
-
-```bash
-cd extension && npm run build
-```
-
-`npm run dev` instead of `build` gives you a watch mode that rebuilds and reloads
-automatically while you work.
 
 ## Using it
 
