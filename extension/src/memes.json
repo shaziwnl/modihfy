@@ -1,0 +1,44 @@
+[
+  {
+    "file": "meme-3.jpg",
+    "width": 828,
+    "height": 960,
+    "aspect": 0.8625
+  },
+  {
+    "file": "meme-2.jpg",
+    "width": 750,
+    "height": 746,
+    "aspect": 1.0054
+  },
+  {
+    "file": "meme-6.webp",
+    "width": 1080,
+    "height": 1066,
+    "aspect": 1.0131
+  },
+  {
+    "file": "meme-4.webp",
+    "width": 720,
+    "height": 685,
+    "aspect": 1.0511
+  },
+  {
+    "file": "meme-5.webp",
+    "width": 1080,
+    "height": 891,
+    "aspect": 1.2121
+  },
+  {
+    "file": "meme-1.jpg",
+    "width": 500,
+    "height": 295,
+    "aspect": 1.6949
+  },
+  {
+    "file": "meme-7.jpeg",
+    "width": 1179,
+    "height": 651,
+    "aspect": 1.8111
+  }
+]

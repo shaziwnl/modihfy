@@ -1,0 +1,18 @@
+node_modules/
+tools/out/
+.DS_Store
+extension/.output/
+extension/.wxt/
+.wxt/
+
+# Local Claude Code permissions
+.claude/settings.local.json
+
+# Source photos of the target: scraped press images, not ours to redistribute.
+# The calibrated embeddings they produce ship in extension/public/targets.json.
+lund/
+
+# face-api model weights (~12MB each copy). Vendored from node_modules at setup
+# time instead of committed — see README.
+models/
+extension/public/models/

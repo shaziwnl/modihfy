@@ -1,0 +1,18 @@
+{
+  "name": "modihfy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "embed": "node tools/embed.js",
+    "curate": "node tools/curate.js",
+    "negatives": "node tools/negatives.js",
+    "calibrate": "node tools/calibrate.js",
+    "audit": "node tools/audit.js"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs-node": "^4.22.0",
+    "@vladmandic/face-api": "^1.7.15",
+    "sharp": "^0.35.4"
+  }
+}
