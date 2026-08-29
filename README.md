@@ -1,5 +1,8 @@
 # modihfy
 
+<img width="720" height="685" alt="logo" src="https://github.com/user-attachments/assets/45890844-5ec0-4a9a-8b00-aee2e9a4ef29" />
+
+
 A Chrome extension that finds one specific person's face in images on any website
 and replaces those images with memes of him.
 
