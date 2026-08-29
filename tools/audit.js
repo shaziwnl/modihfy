@@ -30,7 +30,11 @@ const DUP_EPS = 0.15; // unlabelled source, so drop near-identical repeats
 
 const n = Number(process.argv[2] ?? 1200);
 const dataset = process.argv[3] ?? 'lokesh6309/indian_face-caption';
-const outFile = `tools/out/audit-${dataset.split('/').pop()}.json`;
+// Start row. Once an audit set has been folded into calibration it is no longer an
+// independent test, so a later audit has to draw from rows the calibration never saw.
+const startOffset = Number(process.argv[4] ?? 0);
+const artifactFile = process.argv[5] ?? 'extension/public/targets.json';
+const outFile = `tools/out/audit-${dataset.split('/').pop()}-${startOffset}.json`;
 
 async function fetchPage(offset) {
   const url =
@@ -59,10 +63,10 @@ const minDistance = (emb, set) => {
 };
 
 async function main() {
-  const artifact = JSON.parse(await fs.readFile('extension/public/targets.json', 'utf8'));
+  const artifact = JSON.parse(await fs.readFile(artifactFile, 'utf8'));
   const { threshold, margin } = artifact.rule;
   const targets = artifact.target;
-  console.log(`Auditing ${n} faces from ${dataset}`);
+  console.log(`Auditing ${n} faces from ${dataset} starting at row ${startOffset}`);
   console.log(`Rule under test: threshold ${threshold}, margin ${margin}\n`);
 
   await loadModels();
@@ -73,7 +77,7 @@ async function main() {
   let tooSmall = 0;
   let dupes = 0;
 
-  for (let offset = 0; kept.length < n; offset += PAGE) {
+  for (let offset = startOffset; kept.length < n; offset += PAGE) {
     const rows = await fetchPage(offset);
     if (rows === null) break;
     if (rows.length === 0) break;
@@ -113,7 +117,12 @@ async function main() {
     .map((k) => ({ index: k.index, d: minDistance(k.embedding, targets) }))
     .sort((a, b) => a.d - b.d);
 
-  const hits = scored.filter((s) => s.d < threshold);
+  const hard = artifact.hardNegatives ?? [];
+  const passes = (k, d) =>
+    d < threshold && (margin === 0 || hard.length === 0 || d + margin < minDistance(k.embedding, hard));
+  const hits = kept
+    .map((k) => ({ k, d: minDistance(k.embedding, targets) }))
+    .filter(({ k, d }) => passes(k, d));
 
   console.log(`\n\nAudited ${scored.length} South Asian faces.`);
   console.log(`Closest to target: ${scored[0].d.toFixed(3)} (row ${scored[0].index})`);
@@ -129,7 +138,7 @@ async function main() {
   } else {
     console.log(
       `\nFAIL: ${hits.length} face(s) fell inside the threshold` +
-        ` (rows ${hits.slice(0, 10).map((h) => h.index).join(', ')}).`,
+        ` (rows ${hits.slice(0, 10).map((h) => h.k.index).join(', ')}).`,
     );
     console.log(
       `The LFW-derived threshold does not survive this demographic. Tighten it to` +

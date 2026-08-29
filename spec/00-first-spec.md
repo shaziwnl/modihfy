@@ -37,8 +37,9 @@ static file.
 
 ### Explicitly out of scope for v1
 
-- `<canvas>` elements and CSS `background-image` — neither can be re-fetched by
-  URL, and canvas is a materially harder problem.
+- `<canvas>` elements — cannot be re-fetched by URL, and materially harder.
+  (CSS `background-image` was originally out of scope too, but turned out to be
+  common enough in the wild that it is now handled for inline styles.)
 - Video.
 - Any user configuration beyond the on/off toggle.
 
@@ -139,4 +140,4 @@ sufficient. (The obvious alternative source, `bollywood_celeb_faces`, ships 64×
 pre-cropped thumbnails; upscaling those would embed a blurry crop and produce a
 meaningless answer.)
 
-See [architecture.md](architecture.md) for how the pieces fit together.
+See the [README](../README.md) for the architecture and dataflow diagrams.

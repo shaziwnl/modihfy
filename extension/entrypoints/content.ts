@@ -5,144 +5,148 @@
 // cannot read pixels from cross-origin images anyway. Only a URL string goes out
 // and a verdict comes back.
 //
-// Inference and swapping are driven by two SEPARATE observers:
+// Two kinds of target are handled:
+//   <img>                          — the obvious case
+//   CSS background-image elements  — plugins like imgLiquid read an <img>, move its
+//                                    src onto the parent's background-image, and set
+//                                    the <img> to display:none. The visible pixels
+//                                    then belong to no image element at all, and the
+//                                    hidden <img> measures 0x0.
 //
+// Inference and swapping are driven by two SEPARATE observers:
 //   prefetch (PREFETCH_MARGIN ahead)  →  decide the verdict
 //   viewport (0 margin)               →  apply the swap
-//
-// Doing both at the viewport edge made the swap feel like a stall, because the
-// user was watching inference happen. Deciding early and applying late means the
-// answer is already in hand when the image scrolls in, so the flip is immediate
-// and reads as a transition rather than lag. Whichever of the two happens second
-// triggers the swap, so the ordering does not matter.
+// Deciding early and applying late means the answer is in hand when the element
+// scrolls in, so the flip is a transition rather than a stall. Whichever finishes
+// second triggers the swap, so ordering does not matter.
 
 import type { CheckRequest, CheckResponse } from '../src/protocol';
 import { pickMeme, type Meme } from '../src/pick-meme';
 
 const MIN_DIMENSION = 50; // px; smaller than this is an icon, not a photo
 const RESCAN_DEBOUNCE_MS = 250;
-
-// How far ahead of the viewport to start inferring. Big enough to finish before
-// the image arrives, small enough that a long page is not inferred all at once.
 const PREFETCH_MARGIN = '1500px';
 
-// Deliberate pause between an image becoming visible and the meme landing. The
-// verdict is already known by this point, so this is not waiting on work — it is
-// there so the reader registers the original first and the swap reads as a beat
-// rather than a glitch.
-const SWAP_DELAY_MS = 500;
+// Deliberate pause between an element becoming visible and the meme landing. The
+// verdict is already known by then, so this is not waiting on work — it is there so
+// the reader registers the original first.
+const SWAP_DELAY_MS = 250;
 
-// Log every verdict, not just matches. Without this, "no face found", "scored
-// above threshold" and "the offscreen document threw" are all indistinguishable
-// from silence, which makes log-only mode useless for diagnosis.
 const VERBOSE = true;
 
+type Target = HTMLElement;
+
 interface Swapped {
-  originalSrc: string;
-  originalSrcset: string;
   memeUrl: string;
+  isImg: boolean;
 }
 
-const decided = new WeakSet<HTMLImageElement>(); // verdict known, match or not
-const inFlight = new WeakSet<HTMLImageElement>(); // request outstanding
-const inView = new WeakSet<HTMLImageElement>(); // has reached the viewport
-const pendingSwap = new WeakMap<HTMLImageElement, Meme>(); // matched, awaiting visibility
-const scheduled = new WeakSet<HTMLImageElement>(); // swap timer already running
-const swapped = new WeakMap<HTMLImageElement, Swapped>();
+// Keyed by the URL that was judged, not just the element. Lazy-loaded images are
+// often checked while still showing a placeholder; marking the ELEMENT decided meant
+// the real image, once loaded, was never looked at again.
+const decidedUrl = new WeakMap<Target, string>();
+const inFlight = new WeakSet<Target>();
+const inView = new WeakSet<Target>();
+const pendingSwap = new WeakMap<Target, Meme>();
+const scheduled = new WeakSet<Target>();
+const swapped = new WeakMap<Target, Swapped>();
 
-let swapEnabled = false; // Phase 1 runs in log-only mode; see architecture.md
+let swapEnabled = false;
 
-/** The URL actually being displayed — `currentSrc` accounts for srcset selection. */
-function sourceUrl(img: HTMLImageElement): string | null {
-  const url = img.currentSrc || img.src;
+const isImg = (el: Target): el is HTMLImageElement => el instanceof HTMLImageElement;
+
+/** The first url(...) in an element's background-image, if any. */
+function backgroundUrl(el: Target): string | null {
+  const raw = el.style.backgroundImage || getComputedStyle(el).backgroundImage;
+  if (!raw || raw === 'none') return null;
+  const m = /url\(\s*(['"]?)(.*?)\1\s*\)/.exec(raw);
+  if (!m?.[2]) return null;
+  try {
+    return new URL(m[2], document.baseURI).href;
+  } catch {
+    return null;
+  }
+}
+
+function sourceUrl(el: Target): string | null {
+  const url = isImg(el) ? el.currentSrc || el.src : backgroundUrl(el);
   if (!url) return null;
-  // blob: URLs belong to the page's own object store and cannot be refetched from
-  // an extension context. data: URLs are self-contained and fetch fine.
+  // blob: belongs to the page's own object store and cannot be refetched from an
+  // extension context. SVGs have no intrinsic raster size and fail to decode.
   if (url.startsWith('blob:')) return null;
+  if (/\.svg($|[?#])/i.test(url)) return null;
   return url;
 }
 
-function isCandidate(img: HTMLImageElement): boolean {
-  if (decided.has(img) || inFlight.has(img) || swapped.has(img)) return false;
-  const rect = img.getBoundingClientRect();
-  if (rect.width < MIN_DIMENSION || rect.height < MIN_DIMENSION) return false;
-  return sourceUrl(img) !== null;
+function needsCheck(el: Target): boolean {
+  if (inFlight.has(el) || swapped.has(el)) return false;
+  const url = sourceUrl(el);
+  if (url === null) return false;
+  if (decidedUrl.get(el) === url) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width >= MIN_DIMENSION && rect.height >= MIN_DIMENSION;
 }
 
-/**
- * Swap when both conditions hold: we know it is a match, and it has reached the
- * viewport. Called from both observers, so whichever completes last does the work.
- */
-function maybeSwap(img: HTMLImageElement) {
-  if (!swapEnabled || swapped.has(img) || scheduled.has(img) || !inView.has(img)) return;
-  const meme = pendingSwap.get(img);
+function maybeSwap(el: Target) {
+  if (!swapEnabled || swapped.has(el) || scheduled.has(el) || !inView.has(el)) return;
+  const meme = pendingSwap.get(el);
   if (!meme) return;
-
-  // Both observers call this, so the guard matters: without it an image that is
-  // already visible when its verdict lands would arm two timers and swap twice.
-  scheduled.add(img);
-  setTimeout(() => swap(img, meme), SWAP_DELAY_MS);
+  // Both observers call this, so without the guard an element already visible when
+  // its verdict lands would arm two timers.
+  scheduled.add(el);
+  setTimeout(() => swap(el, meme), SWAP_DELAY_MS);
 }
 
-/**
- * Replace the image, then hold the replacement in place.
- *
- * Three things fight this swap:
- *  - `srcset`, which the browser prefers over `src`, so it must be cleared
- *  - a parent `<picture>`, whose `<source>` children outrank the img entirely
- *  - framework re-renders, which reassign `src` from their own state
- */
-function swap(img: HTMLImageElement, meme: Meme) {
+function swap(el: Target, meme: Meme) {
   const memeUrl = chrome.runtime.getURL(`memes/${meme.file}`);
+  swapped.set(el, { memeUrl, isImg: isImg(el) });
+  applyMeme(el, memeUrl);
 
-  swapped.set(img, {
-    originalSrc: img.src,
-    originalSrcset: img.srcset,
-    memeUrl,
-  });
-
-  applyMeme(img, memeUrl);
-
-  // Re-apply when a framework re-render reverts us. Scoped to this element and
-  // to the two attributes that matter, so it stays cheap.
+  // Re-apply when a framework re-render or plugin reverts us.
   const guard = new MutationObserver(() => {
-    const state = swapped.get(img);
-    if (!state) return;
-    if (img.getAttribute('src') !== state.memeUrl || img.srcset) {
-      applyMeme(img, state.memeUrl);
-    }
+    const state = swapped.get(el);
+    if (state) applyMeme(el, state.memeUrl);
   });
-  guard.observe(img, { attributes: true, attributeFilter: ['src', 'srcset', 'sizes'] });
+  guard.observe(el, {
+    attributes: true,
+    attributeFilter: isImg(el) ? ['src', 'srcset', 'sizes'] : ['style'],
+  });
 }
 
-function applyMeme(img: HTMLImageElement, memeUrl: string) {
+function applyMeme(el: Target, memeUrl: string) {
+  if (!isImg(el)) {
+    // Compare before writing: setting backgroundImage retriggers our own observer.
+    if (backgroundUrl(el) !== memeUrl) {
+      el.style.setProperty('background-image', `url("${memeUrl}")`, 'important');
+    }
+    return;
+  }
+
   // A <picture>'s <source> elements win over the <img>, so blank them first.
-  const picture = img.parentElement;
+  const picture = el.parentElement;
   if (picture instanceof HTMLPictureElement) {
     for (const source of picture.querySelectorAll('source')) {
       source.removeAttribute('srcset');
       source.removeAttribute('sizes');
     }
   }
-
-  // Order matters: clearing srcset before setting src avoids a flash of the
-  // original at a different resolution.
-  img.removeAttribute('srcset');
-  img.removeAttribute('sizes');
-  if (img.getAttribute('src') !== memeUrl) img.setAttribute('src', memeUrl);
+  // Order matters: clearing srcset before setting src avoids a flash of the original.
+  el.removeAttribute('srcset');
+  el.removeAttribute('sizes');
+  if (el.getAttribute('src') !== memeUrl) el.setAttribute('src', memeUrl);
 }
 
-async function check(img: HTMLImageElement) {
-  const url = sourceUrl(img);
+async function check(el: Target) {
+  const url = sourceUrl(el);
   if (!url) return;
 
-  inFlight.add(img);
+  inFlight.add(el);
   try {
     const res: CheckResponse = await chrome.runtime.sendMessage<CheckRequest, CheckResponse>({
       type: 'CHECK_IMAGE',
       url,
     });
-    decided.add(img);
+    decidedUrl.set(el, url);
 
     if (!res?.match) {
       if (VERBOSE) {
@@ -154,31 +158,44 @@ async function check(img: HTMLImageElement) {
     }
 
     const meme = pickMeme(url);
-    pendingSwap.set(img, meme);
+    pendingSwap.set(el, meme);
     console.info(
       `[modihfy] match d=${res.distance?.toFixed(3)} -> ${meme.file}`,
       swapEnabled ? '' : '(log-only mode, not swapping)',
       url,
     );
-    maybeSwap(img); // no-op until it reaches the viewport
+    maybeSwap(el);
   } catch (err) {
-    // Service worker asleep or extension reloading; leave undecided so a later
-    // rescan retries.
     if (VERBOSE) console.debug('[modihfy] check failed', url, err);
   } finally {
-    inFlight.delete(img);
+    inFlight.delete(el);
   }
 }
 
-// Constructed inside main(), not at module scope: WXT imports this file in Node
-// at build time to read the config below, where browser globals do not exist.
+// Constructed inside main(): WXT imports this file in Node at build time to read the
+// config below, where browser globals do not exist.
 let prefetch: IntersectionObserver;
 let viewport: IntersectionObserver;
 
+/**
+ * Every element worth judging.
+ *
+ * Background images are found via the inline-style selector rather than by walking
+ * the DOM and calling getComputedStyle on everything — that would be far too slow on
+ * a large page. It catches the JS-driven cases that matter (imgLiquid, lazysizes and
+ * friends all write inline styles); backgrounds set purely in a stylesheet are missed.
+ */
+function collectTargets(): Target[] {
+  return [
+    ...document.images,
+    ...document.querySelectorAll<HTMLElement>('[style*="background-image"]'),
+  ];
+}
+
 function scan() {
-  for (const img of document.images) {
-    if (!decided.has(img) && !inFlight.has(img)) prefetch.observe(img);
-    if (!inView.has(img)) viewport.observe(img);
+  for (const el of collectTargets()) {
+    if (needsCheck(el)) prefetch.observe(el);
+    if (!inView.has(el)) viewport.observe(el);
   }
 }
 
@@ -192,35 +209,41 @@ export default defineContentScript({
   matches: ['<all_urls>'],
   runAt: 'document_idle',
 
+  // Embedded content — tweets, video cards, most social widgets — renders inside a
+  // cross-origin iframe with its own document. Without this the script only ever
+  // sees the top frame, and every image inside an embed is invisible to it.
+  // Each frame runs its own copy, but they all talk to the same offscreen document,
+  // so this costs observers rather than model loads.
+  allFrames: true,
+
   async main() {
     const stored = await chrome.storage.local.get('swapEnabled');
     swapEnabled = stored.swapEnabled === true;
     console.info(`[modihfy] active (${swapEnabled ? 'swapping' : 'log-only'})`);
 
     // Decide early, ahead of the viewport, so the answer is ready on arrival.
-    // Registering an image costs nothing; only intersecting ones are inferred,
-    // so a long page still never infers more than the reader approaches.
     prefetch = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
-          const img = entry.target as HTMLImageElement;
-          prefetch.unobserve(img);
-          if (isCandidate(img)) void check(img);
+          const el = entry.target as Target;
+          if (needsCheck(el)) {
+            prefetch.unobserve(el);
+            void check(el);
+          }
         }
       },
       { rootMargin: PREFETCH_MARGIN },
     );
 
-    // Apply late, exactly at the viewport edge. Zero margin on purpose: this is
-    // what makes the change visible to the reader rather than happening offscreen.
+    // Apply late, at the viewport edge, so the change is visible to the reader.
     viewport = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
-        const img = entry.target as HTMLImageElement;
-        viewport.unobserve(img);
-        inView.add(img);
-        maybeSwap(img);
+        const el = entry.target as Target;
+        viewport.unobserve(el);
+        inView.add(el);
+        maybeSwap(el);
       }
     });
 
@@ -231,7 +254,7 @@ export default defineContentScript({
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['src', 'srcset'],
+      attributeFilter: ['src', 'srcset', 'style'],
     });
   },
 });

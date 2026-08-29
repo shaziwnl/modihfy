@@ -11,6 +11,8 @@ extension/.wxt/
 # Source photos of the target: scraped press images, not ours to redistribute.
 # The calibrated embeddings they produce ship in extension/public/targets.json.
 lund/
+lund-profile/
+lund-test/
 
 # face-api model weights (~12MB each copy). Vendored from node_modules at setup
 # time instead of committed — see README.

@@ -33,9 +33,13 @@ const MARGINS = [0, 0.02, 0.05, 0.08, 0.12];
 // threshold tighter than the evidence warrants.
 const EXCLUDE_IDENTITY = /modi/i;
 
-const targetFile = 'tools/out/target-set.json';
-const negFile = 'tools/out/negatives.json';
-const outFile = 'extension/public/targets.json';
+// Extra negative sources may be passed comma-separated. LFW alone is 2007 Western
+// press photography, so a threshold calibrated on it is optimistic for a target of
+// any other demographic — folding the audit set in measures against the faces that
+// actually collide instead of discovering them afterwards.
+const negFiles = (process.argv[2] ?? 'tools/out/negatives.json').split(',');
+const outFile = process.argv[3] ?? 'extension/public/targets.json';
+const targetFile = process.argv[4] ?? 'tools/out/target-set.json';
 
 const minDistance = (emb, set) => {
   let best = Infinity;
@@ -99,14 +103,27 @@ function distanceToHard(embedding, identity, hard) {
 
 async function main() {
   const targetSet = JSON.parse(await fs.readFile(targetFile, 'utf8'));
-  const negSet = JSON.parse(await fs.readFile(negFile, 'utf8'));
   const targets = targetSet.faces.map((f) => f.embedding);
 
-  const contaminated = negSet.embeddings.filter((n) => EXCLUDE_IDENTITY.test(n.identity));
-  const allNeg = negSet.embeddings.filter((n) => !EXCLUDE_IDENTITY.test(n.identity));
+  // Sources differ in shape: the LFW set carries identity labels, the audit sets do
+  // not. Synthesise labels for the latter so the same-identity exclusions downstream
+  // still behave.
+  const loaded = [];
+  const sourceNames = [];
+  for (const file of negFiles) {
+    const set = JSON.parse(await fs.readFile(file, 'utf8'));
+    const name = set.source ?? set.dataset ?? file;
+    sourceNames.push(`${name} (${set.embeddings.length})`);
+    for (const [i, e] of set.embeddings.entries()) {
+      loaded.push({ identity: e.identity ?? `${name}#${e.index ?? i}`, embedding: e.embedding });
+    }
+  }
+
+  const contaminated = loaded.filter((n) => EXCLUDE_IDENTITY.test(n.identity));
+  const allNeg = loaded.filter((n) => !EXCLUDE_IDENTITY.test(n.identity));
 
   console.log(`Target embeddings: ${targets.length}`);
-  console.log(`Negative embeddings: ${allNeg.length} (${negSet.source})`);
+  console.log(`Negative embeddings: ${allNeg.length} from ${sourceNames.join(' + ')}`);
   if (contaminated.length) {
     console.log(
       `Excluded ${contaminated.length} as the target's own identity: ` +
@@ -223,7 +240,7 @@ async function main() {
     calibration: {
       targetCount: targets.length,
       negativeCount: allNeg.length,
-      negativeSource: negSet.source,
+      negativeSources: sourceNames,
       measuredRecall: Number(chosen.recall.toFixed(4)),
       falsePositives: chosen.totalFp,
       holdoutFalsePositives: chosen.holdFp,
