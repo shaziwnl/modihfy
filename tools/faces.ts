@@ -4,7 +4,7 @@
 // the source photos include AVIF and WebP, which tf.node.decodeImage cannot read.
 // sharp handles every format in lund/ and applies EXIF orientation.
 
-import './node-compat.js'; // must precede tfjs-node
+import './node-compat.ts'; // must precede tfjs-node
 import * as tf from '@tensorflow/tfjs-node';
 import sharp from 'sharp';
 import faceapi from '@vladmandic/face-api';
@@ -14,12 +14,85 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MODEL_DIR = path.join(ROOT, 'models');
 
+/** A 128-d face descriptor, as plain numbers so it survives JSON round-trips. */
+export type Embedding = number[];
+
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** One detected face. Images can yield several — group shots are common. */
+export interface DetectedFace {
+  file: string;
+  bbox: BoundingBox;
+  faceWidth: number;
+  /** Detector confidence, not match confidence. */
+  score: number;
+  embedding: Embedding;
+}
+
+/** What embed.ts writes and curate.ts reads. */
+export interface RawFaces {
+  inputDir: string;
+  faces: DetectedFace[];
+}
+
+/** A curated target face, carrying its distance from the cluster median. */
+export interface CuratedFace {
+  file: string;
+  faceWidth: number;
+  dMedian: number;
+  embedding: Embedding;
+}
+
+export interface TargetSet {
+  params: Record<string, number>;
+  sources?: string[];
+  count: number;
+  faces: CuratedFace[];
+}
+
+/** One stranger. `identity` groups multiple images of the same person. */
+export interface NegativeFace {
+  identity: string;
+  faceWidth?: number;
+  embedding: Embedding;
+}
+
+export interface NegativeSet {
+  source?: string;
+  dataset?: string;
+  count: number;
+  nextOffset?: number;
+  seenIdentities?: string[];
+  embeddings: NegativeFace[];
+}
+
+/** The rule the extension actually applies, and the evidence behind it. */
+export interface MatchRule {
+  threshold: number;
+  margin: number;
+  minFacePx: number;
+}
+
+export interface TargetArtifact {
+  generatedAt: string;
+  model: string;
+  rule: MatchRule;
+  calibration: Record<string, unknown>;
+  target: Embedding[];
+  hardNegatives: Embedding[];
+}
+
 // SSD rather than TinyFaceDetector: this runs offline where accuracy beats speed.
 const DETECTOR_OPTS = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
 
 let loaded = false;
 
-export async function loadModels() {
+export async function loadModels(): Promise<void> {
   if (loaded) return;
   await faceapi.nets.ssdMobilenetv1.loadFromDisk(MODEL_DIR);
   await faceapi.nets.faceLandmark68Net.loadFromDisk(MODEL_DIR);
@@ -31,7 +104,7 @@ export async function loadModels() {
  * Decode any image format to an RGB uint8 tensor of shape [h, w, 3].
  * Accepts a file path or a Buffer of encoded image bytes.
  */
-export async function decodeToTensor(src) {
+export async function decodeToTensor(src: string | Buffer): Promise<tf.Tensor3D> {
   const { data, info } = await sharp(src)
     .rotate() // apply EXIF orientation before we measure anything
     .removeAlpha()
@@ -47,11 +120,14 @@ export async function decodeToTensor(src) {
  *
  * `src` is a file path or a Buffer; `name` labels the output rows.
  */
-export async function facesInImage(src, name = null) {
+export async function facesInImage(
+  src: string | Buffer,
+  name: string | null = null,
+): Promise<DetectedFace[]> {
   const tensor = await decodeToTensor(src);
   try {
     const results = await faceapi
-      .detectAllFaces(tensor, DETECTOR_OPTS)
+      .detectAllFaces(tensor as never, DETECTOR_OPTS)
       .withFaceLandmarks()
       .withFaceDescriptors();
 
@@ -76,11 +152,21 @@ export async function facesInImage(src, name = null) {
 }
 
 /** Euclidean distance between two embeddings. */
-export function distance(a, b) {
+export function distance(a: ArrayLike<number>, b: ArrayLike<number>): number {
   let sum = 0;
-  for (let i = 0; i < a.length; i++) {
+  for (let i = 0; i < b.length; i++) {
     const d = a[i] - b[i];
     sum += d * d;
   }
   return Math.sqrt(sum);
+}
+
+/** Smallest distance from one embedding to any member of a set. */
+export function minDistance(emb: ArrayLike<number>, set: readonly Embedding[]): number {
+  let best = Infinity;
+  for (const v of set) {
+    const d = distance(emb, v);
+    if (d < best) best = d;
+  }
+  return best;
 }

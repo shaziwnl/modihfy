@@ -19,7 +19,14 @@
 // rule selects its own hard negatives and would otherwise be graded on exactly the
 // data it was fitted to.
 
-import { distance } from './faces.js';
+import {
+  distance,
+  minDistance,
+  type Embedding,
+  type NegativeFace,
+  type NegativeSet,
+  type TargetSet,
+} from './faces.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -41,17 +48,14 @@ const negFiles = (process.argv[2] ?? 'tools/out/negatives.json').split(',');
 const outFile = process.argv[3] ?? 'extension/public/targets.json';
 const targetFile = process.argv[4] ?? 'tools/out/target-set.json';
 
-const minDistance = (emb, set) => {
-  let best = Infinity;
-  for (const v of set) {
-    const d = distance(emb, v);
-    if (d < best) best = d;
-  }
-  return best;
-};
-
-function histogram(values, lo, hi, bins, width = 48) {
-  const counts = new Array(bins).fill(0);
+function histogram(
+  values: number[],
+  lo: number,
+  hi: number,
+  bins: number,
+  width = 48,
+): string {
+  const counts: number[] = new Array(bins).fill(0);
   for (const v of values) {
     const i = Math.min(bins - 1, Math.max(0, Math.floor(((v - lo) / (hi - lo)) * bins)));
     counts[i]++;
@@ -66,7 +70,7 @@ function histogram(values, lo, hi, bins, width = 48) {
 }
 
 /** Deterministic shuffle so the fit/holdout split is reproducible across runs. */
-function shuffled(arr, seed = 42) {
+function shuffled<T>(arr: T[], seed = 42): T[] {
   let s = seed;
   const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   return arr
@@ -76,7 +80,13 @@ function shuffled(arr, seed = 42) {
 }
 
 /** The negatives nearest the target — the only ones that can ever win a margin test. */
-function selectHard(negatives, targets) {
+interface HardNegative {
+  identity: string;
+  embedding: Embedding;
+  d: number;
+}
+
+function selectHard(negatives: NegativeFace[], targets: Embedding[]): HardNegative[] {
   return negatives
     .map((n) => ({ identity: n.identity, embedding: n.embedding, d: minDistance(n.embedding, targets) }))
     .sort((a, b) => a.d - b.d)
@@ -91,7 +101,11 @@ function selectHard(negatives, targets) {
  * far better than it is. At runtime a *different* photo of that person arrives, at
  * a real distance from the bundled vector, so the calibration must model that.
  */
-function distanceToHard(embedding, identity, hard) {
+function distanceToHard(
+  embedding: ArrayLike<number>,
+  identity: string | null,
+  hard: HardNegative[],
+): number {
   let best = Infinity;
   for (const h of hard) {
     if (h.identity === identity) continue;
@@ -102,16 +116,18 @@ function distanceToHard(embedding, identity, hard) {
 }
 
 async function main() {
-  const targetSet = JSON.parse(await fs.readFile(targetFile, 'utf8'));
+  const targetSet = JSON.parse(await fs.readFile(targetFile, 'utf8')) as TargetSet;
   const targets = targetSet.faces.map((f) => f.embedding);
 
   // Sources differ in shape: the LFW set carries identity labels, the audit sets do
   // not. Synthesise labels for the latter so the same-identity exclusions downstream
   // still behave.
-  const loaded = [];
-  const sourceNames = [];
+  const loaded: NegativeFace[] = [];
+  const sourceNames: string[] = [];
   for (const file of negFiles) {
-    const set = JSON.parse(await fs.readFile(file, 'utf8'));
+    const set = JSON.parse(await fs.readFile(file, 'utf8')) as Omit<NegativeSet, 'embeddings'> & {
+      embeddings: Array<{ identity?: string; index?: number; embedding: Embedding }>;
+    };
     const name = set.source ?? set.dataset ?? file;
     sourceNames.push(`${name} (${set.embeddings.length})`);
     for (const [i, e] of set.embeddings.entries()) {
@@ -146,10 +162,10 @@ async function main() {
   console.log('\nStranger distance to nearest target photo (false-positive side):');
   console.log(histogram([...negD.values()], 0.2, 0.8, 12));
 
-  const nearest = allNeg.reduce((a, b) => (negD.get(b) < negD.get(a) ? b : a));
+  const nearest = allNeg.reduce((a, b) => ((negD.get(b) as number) < (negD.get(a) as number) ? b : a));
   console.log(
     `\nHardest target photo: ${Math.max(...targetLoo).toFixed(3)}` +
-      `   nearest stranger: ${negD.get(nearest).toFixed(3)} (${nearest.identity})`,
+      `   nearest stranger: ${(negD.get(nearest) as number).toFixed(3)} (${nearest.identity})`,
   );
 
   // Hard negatives come from the fit half only, so the holdout stays uncontaminated.
@@ -158,7 +174,14 @@ async function main() {
   const dNegFit = new Map(fit.map((n) => [n, distanceToHard(n.embedding, n.identity, hardFit)]));
   const dNegHold = new Map(hold.map((n) => [n, distanceToHard(n.embedding, n.identity, hardFit)]));
 
-  const passes = (d, dNeg, T, M) => d < T && (M === 0 || d + M < dNeg);
+  const passes = (d: number, dNeg: number, T: number, M: number): boolean =>
+    d < T && (M === 0 || d + M < dNeg);
+
+  // Every negative was inserted into these maps above, so the lookups cannot miss.
+  // Naming that assumption once beats scattering non-null assertions through the sweep.
+  const dTarget = (n: NegativeFace): number => negD.get(n) as number;
+  const dHardFit = (n: NegativeFace): number => dNegFit.get(n) as number;
+  const dHardHold = (n: NegativeFace): number => dNegHold.get(n) as number;
 
   // --- Sweep --------------------------------------------------------------
   console.log(
@@ -166,25 +189,39 @@ async function main() {
   );
   console.log('  margin  threshold   recall    fit FPR     holdout FPR   total FP');
 
-  const candidates = [];
+  interface Candidate {
+    T: number;
+    M: number;
+    recall: number;
+    fp: number;
+    fpr: number;
+    holdFp: number;
+    holdFpr: number;
+    totalFp: number;
+  }
+
+  const candidates: Candidate[] = [];
   for (const M of MARGINS) {
-    let best = null;
+    let best: Candidate | null = null;
     for (let T = 0.3; T <= 0.75; T += 0.005) {
       const recall =
         targets.filter((_, i) => passes(targetLoo[i], dNegTargetFit[i], T, M)).length / targets.length;
-      const fp = fit.filter((n) => passes(negD.get(n), dNegFit.get(n), T, M)).length;
+      const fp = fit.filter((n) => passes(dTarget(n), dHardFit(n), T, M)).length;
       const fpr = fp / fit.length;
       if (fpr > TARGET_FPR) continue;
       // Keep the SMALLEST threshold that reaches the best recall. Once recall has
       // saturated, a larger threshold buys nothing and gives away head-room against
       // faces unlike anything in the negative set.
-      if (!best || recall > best.recall) best = { T, M, recall, fp, fpr };
+      if (!best || recall > best.recall) {
+        best = { T, M, recall, fp, fpr, holdFp: 0, holdFpr: 0, totalFp: 0 };
+      }
     }
     if (!best) {
       console.log(`  ${M.toFixed(2)}    —         no threshold meets the FPR budget`);
       continue;
     }
-    best.holdFp = hold.filter((n) => passes(negD.get(n), dNegHold.get(n), best.T, best.M)).length;
+    const chosenBest = best;
+    best.holdFp = hold.filter((n) => passes(dTarget(n), dHardHold(n), chosenBest.T, chosenBest.M)).length;
     best.holdFpr = best.holdFp / hold.length;
     candidates.push(best);
     console.log(

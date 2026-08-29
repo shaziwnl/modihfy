@@ -8,6 +8,12 @@
 
 import util from 'node:util';
 
-if (typeof util.isNullOrUndefined !== 'function') {
-  util.isNullOrUndefined = (arg) => arg === null || arg === undefined;
+type LegacyUtil = typeof util & {
+  isNullOrUndefined?: (arg: unknown) => boolean;
+};
+
+const legacy = util as LegacyUtil;
+
+if (typeof legacy.isNullOrUndefined !== 'function') {
+  legacy.isNullOrUndefined = (arg: unknown): boolean => arg === null || arg === undefined;
 }

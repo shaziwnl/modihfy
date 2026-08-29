@@ -23,7 +23,7 @@ hit strangers regularly. It was measured instead of assumed.
 
 | | |
 |---|---|
-| Target embeddings | 41 (from 47 source photos) |
+| Target embeddings | 43 (from 43 source photos) |
 | Negative set | 5,187 LFW identities |
 | **Rule** | **distance < 0.445**, no margin, min 80px face |
 | Recall | 100% (leave-one-out) |
@@ -40,17 +40,17 @@ Build time produces one file. Runtime consumes it.
 flowchart TB
     subgraph offline["Offline pipeline — Node, run once"]
         direction TB
-        PHOTOS["lund/<br/>47 press photos"] --> EMBED["embed.js<br/>detect + embed<br/><i>one record per face</i>"]
-        EMBED --> CURATE["curate.js<br/>size → dedup →<br/>cluster → outliers"]
-        CURATE --> TSET["target-set.json<br/><b>41 embeddings</b>"]
-        LFW["LFW<br/>13,233 images"] --> NEG["negatives.js<br/>one image per identity"]
-        NEG --> NSET["negatives.json<br/><b>5,187 strangers</b>"]
-        TSET --> CAL["calibrate.js<br/>sweep every threshold<br/>recall vs. measured FPR"]
+        PHOTOS["lund/<br/>43 source photos"] --> EMBED["embed.ts<br/>detect + embed<br/><i>one record per face</i>"]
+        EMBED --> CURATE["curate.ts<br/>size → dedup →<br/>cluster → outliers"]
+        CURATE --> TSET["target-set.json<br/><b>43 embeddings</b>"]
+        LFW["LFW<br/>13,233 images"] --> NEG["negatives.ts<br/>one image per identity"]
+        NEG --> NSET["negatives.tson<br/><b>5,187 strangers</b>"]
+        TSET --> CAL["calibrate.ts<br/>sweep every threshold<br/>recall vs. measured FPR"]
         NSET --> CAL
-        CAL --> AUDIT["audit.js<br/>re-test on Indian faces"]
+        CAL --> AUDIT["audit.ts<br/>re-test on Indian faces"]
     end
 
-    CAL ==> ARTIFACT[("targets.json<br/>41 vectors + 0.445")]
+    CAL ==> ARTIFACT[("targets.json<br/>43 vectors + 0.445")]
 
     subgraph runtime["Runtime — Chrome MV3"]
         direction TB
@@ -90,8 +90,8 @@ flowchart TB
     SIZE -->|"yes"| ALIGN["<b>68-point landmarks</b><br/>align + crop to 150×150"]
     ALIGN --> EMBED["<b>ResNet-34</b><br/>→ 128-d embedding"]
 
-    EMBED --> COMPARE{"min Euclidean distance<br/>to any of 41 target vectors"}
-    TARGETS[("targets.json<br/>41 × 128 floats")] -.-> COMPARE
+    EMBED --> COMPARE{"min Euclidean distance<br/>to any of 43 target vectors"}
+    TARGETS[("targets.json<br/>43 × 128 floats")] -.-> COMPARE
 
     COMPARE -->|"d ≥ 0.445"| ABOVE(["above-threshold"])
     COMPARE -->|"d &lt; 0.445"| MATCH(["<b>match</b>"])
@@ -135,19 +135,22 @@ guards three traps that each silently *flatter* the result:
   when measuring that distance. Removing this circularity changed the answer — the
   margin looked valuable and turned out not to be.
 
-A fourth is why `audit.js` exists: LFW is overwhelmingly Western, so a rate measured
+A fourth is why `audit.ts` exists: LFW is overwhelmingly Western, so a rate measured
 on it alone is optimistic for a target of any other demographic.
 
 ### Why each curation step exists
 
-| Step | Removes | On the real set |
+| Step | Removes | Caught on the first run |
 |---|---|---|
 | Size filter (≥80px crop) | Faces too small to embed reliably | 2 faces |
 | Dedup (<0.15 apart) | Re-encodes and resizes of the same photo — catches what byte hashing misses | 3 faces |
 | Largest cluster (<0.55) | Bystanders in group shots, wrong-person photos | 2 faces |
 | Outlier trim (>0.5 from median) | Stragglers that widen the match radius | 0 faces |
 
-48 detected faces → 41 embeddings, with no manual review of any photo.
+The first run over 47 photos took 48 detected faces down to 41, with no manual
+review of anything. The files whose faces were dropped for size or duplication have
+since been deleted, so the current set of 43 photos yields 45 faces and loses only
+the two bystanders standing beside the target in one group shot.
 
 ---
 
@@ -318,6 +321,37 @@ npm run audit       # re-test the threshold against Indian faces
 cd extension && npm run build   # REQUIRED — see below
 ```
 
+### Scoring one image
+
+```bash
+npm run score -- lund-test/img-3.avif       # a file
+npm run score -- lund-test/                 # or a whole folder
+npm run score -- photo.jpg --verbose        # every face, not just the best
+```
+
+```
+Rule: distance < 0.445, no margin, min face 80px, 43 target vectors
+
+  img-3.avif       161px det=0.83   d=0.478   MISS   (needs 0.033 closer)
+  img-4.webp          --        no face detected
+```
+
+Answers "why didn't this image work?" without loading the extension, using the same
+detector, size gate and threshold the browser uses. The four outcomes point at
+different fixes:
+
+| Result | Meaning |
+|---|---|
+| `MATCH` | Would be swapped |
+| `MISS (needs N closer)` | Coverage gap — a similar photo in `lund/` would help |
+| `face under 80px` | Too small to embed reliably |
+| `no face detected` | Detector never found it; no target set can fix this |
+
+It cannot reproduce **discovery** — whether the content script ever found the image
+on the page. Something that scores `MATCH` here but is not swapped in the browser is
+a discovery problem (hidden element, stylesheet-only background, unreachable frame),
+not a matching one.
+
 **`calibrate` alone does not change what runs in Chrome.** It writes
 `extension/public/targets.json`, but the browser loads from
 `extension/.output/chrome-mv3/`, which is only refreshed by a build. Skip the
@@ -331,6 +365,13 @@ without the other leaves them inconsistent.
 
 `curate` and `calibrate` both accept comma-separated sources, so additional photo
 sets and negative sets can be folded in without touching the code.
+
+The tools are TypeScript, run directly by Node's built-in type stripping — there is
+no build step for them. Types are therefore never checked at run time, so:
+
+```bash
+npm run typecheck   # tsc --noEmit over tools/
+```
 
 ## Known limitations
 
@@ -358,9 +399,9 @@ lund/                     source photos of the target (gitignored)
 memes/                    replacement images
 models/                   face-api weights (gitignored, vendored at setup)
 tools/
-  faces.js                shared decode + detect + embed
-  node-compat.js          Node 26 shim for tfjs-node
-  embed.js  curate.js  negatives.js  calibrate.js  audit.js
+  faces.ts                shared decode + detect + embed
+  node-compat.ts          Node 26 shim for tfjs-node
+  embed.ts  curate.ts  negatives.ts  calibrate.ts  audit.ts  score.ts
 extension/
   wxt.config.ts           manifest, permissions, CSP, icons
   src/                    protocol types, meme picker + manifest

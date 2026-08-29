@@ -27,7 +27,7 @@
 //
 // Usage: node tools/curate.js [rawFile[,rawFile2,...]] [outFile]
 
-import { distance } from './faces.js';
+import { distance, type CuratedFace, type DetectedFace, type Embedding, type RawFaces } from './faces.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -39,13 +39,13 @@ const OUTLIER_EPS = 0.5; // from cluster median
 const rawFiles = (process.argv[2] ?? 'tools/out/raw-faces.json').split(',');
 const outFile = process.argv[3] ?? 'tools/out/target-set.json';
 
-const label = (f) => `${f.file}[${f.bbox.x},${f.bbox.y} ${f.faceWidth}px]`;
+const label = (f: DetectedFace): string => `${f.file}[${f.bbox.x},${f.bbox.y} ${f.faceWidth}px]`;
 
 /** Element-wise median — more robust to a stray bad embedding than the mean. */
-function medianEmbedding(faces) {
+function medianEmbedding(faces: DetectedFace[]): Embedding {
   const dims = faces[0].embedding.length;
-  const out = new Array(dims);
-  const scratch = new Array(faces.length);
+  const out: number[] = new Array(dims);
+  const scratch: number[] = new Array(faces.length);
   for (let d = 0; d < dims; d++) {
     for (let i = 0; i < faces.length; i++) scratch[i] = faces[i].embedding[d];
     scratch.sort((a, b) => a - b);
@@ -55,8 +55,13 @@ function medianEmbedding(faces) {
   return out;
 }
 
-async function curateOne(rawFile) {
-  const { faces: raw } = JSON.parse(await fs.readFile(rawFile, 'utf8'));
+interface CuratedGroup {
+  kept: CuratedFace[];
+  median: Embedding;
+}
+
+async function curateOne(rawFile: string): Promise<CuratedGroup> {
+  const { faces: raw } = JSON.parse(await fs.readFile(rawFile, 'utf8')) as RawFaces;
   console.log(`\n=== ${rawFile}: ${raw.length} detected faces ===\n`);
 
   // 1. size filter
@@ -67,8 +72,8 @@ async function curateOne(rawFile) {
 
   // 2. dedup in embedding space, keeping the largest crop of each duplicate group
   faces.sort((a, b) => b.faceWidth - a.faceWidth);
-  const unique = [];
-  const dupes = [];
+  const unique: DetectedFace[] = [];
+  const dupes: Array<[DetectedFace, DetectedFace]> = [];
   for (const f of faces) {
     const match = unique.find((u) => distance(u.embedding, f.embedding) < DUP_EPS);
     if (match) dupes.push([f, match]);
@@ -120,11 +125,11 @@ async function curateOne(rawFile) {
 }
 
 async function main() {
-  const groups = [];
+  const groups: Array<CuratedGroup & { file: string }> = [];
   for (const f of rawFiles) groups.push({ file: f, ...(await curateOne(f)) });
 
   // Merge, skipping anything an earlier group already covers.
-  const merged = [];
+  const merged: CuratedFace[] = [];
   for (const g of groups) {
     for (const f of g.kept) {
       if (!merged.some((m) => distance(m.embedding, f.embedding) < DUP_EPS)) merged.push(f);

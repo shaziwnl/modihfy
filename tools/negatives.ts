@@ -12,7 +12,7 @@
 //
 // Usage: node tools/negatives.js [numIdentities] [outFile]
 
-import { loadModels, facesInImage } from './faces.js';
+import { loadModels, facesInImage, type NegativeFace, type NegativeSet } from './faces.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -24,12 +24,17 @@ const TOTAL_ROWS = 13233;
 const target = Number(process.argv[2] ?? 3000);
 const outFile = process.argv[3] ?? 'tools/out/negatives.json';
 
-const identityOf = (filename) => filename.replace(/_\d+\.jpg$/i, '');
+const identityOf = (filename: string): string => filename.replace(/_\d+\.jpg$/i, '');
 
 // The datasets-server 502s intermittently under load. A page that will not come
 // back after patient retries is skipped rather than aborting the whole run —
 // losing 100 rows out of 13k costs nothing, losing an hour of embedding costs a lot.
-async function fetchPage(offset) {
+interface Row {
+  filename: string;
+  src: string;
+}
+
+async function fetchPage(offset: number): Promise<Row[] | null> {
   const url =
     `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(DATASET)}` +
     `&config=default&split=train&offset=${offset}&length=${PAGE}`;
@@ -37,19 +42,21 @@ async function fetchPage(offset) {
     try {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      const json = (await res.json()) as { rows: Array<{ row: { filename: string; image: { src: string } } }> };
       return json.rows.map((r) => ({ filename: r.row.filename, src: r.row.image.src }));
     } catch (err) {
       if (attempt === 6) {
-        process.stdout.write(`\n  page at offset ${offset} failed (${err.message}), skipping\n`);
+        process.stdout.write(`\n  page at offset ${offset} failed (${(err as Error).message}), skipping\n`);
         return null;
       }
       await new Promise((r) => setTimeout(r, Math.min(30000, 1000 * 2 ** attempt)));
     }
   }
+  // Unreachable: the final attempt always returns. Present so the signature holds.
+  return null;
 }
 
-async function download(src) {
+async function download(src: string): Promise<Buffer> {
   const res = await fetch(src);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
@@ -60,11 +67,11 @@ async function main() {
   await loadModels();
 
   // Resume from a previous run's checkpoint if present.
-  let embeddings = [];
-  let seen = new Set();
+  let embeddings: NegativeFace[] = [];
+  let seen = new Set<string>();
   let startOffset = 0;
   try {
-    const prior = JSON.parse(await fs.readFile(outFile, 'utf8'));
+    const prior = JSON.parse(await fs.readFile(outFile, 'utf8')) as NegativeSet;
     embeddings = prior.embeddings ?? [];
     seen = new Set(prior.seenIdentities ?? embeddings.map((e) => e.identity));
     startOffset = prior.nextOffset ?? 0;

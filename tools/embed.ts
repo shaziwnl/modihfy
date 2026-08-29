@@ -5,7 +5,7 @@
 //
 // Usage: node tools/embed.js [inputDir] [outFile]
 
-import { loadModels, facesInImage } from './faces.js';
+import { loadModels, facesInImage, type DetectedFace } from './faces.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -22,9 +22,9 @@ async function main() {
   console.log(`Embedding ${names.length} images from ${inputDir}/`);
   await loadModels();
 
-  const faces = [];
-  const noFace = [];
-  const failed = [];
+  const faces: DetectedFace[] = [];
+  const noFace: string[] = [];
+  const failed: Array<{ name: string; error: string }> = [];
 
   for (const name of names) {
     const file = path.join(inputDir, name);
@@ -39,8 +39,8 @@ async function main() {
         console.log(`  ${name.padEnd(16)} ${found.length} face(s)  ${desc}`);
       }
     } catch (err) {
-      failed.push({ name, error: err.message });
-      console.log(`  ${name.padEnd(16)} DECODE FAILED: ${err.message}`);
+      failed.push({ name, error: (err as Error).message });
+      console.log(`  ${name.padEnd(16)} DECODE FAILED: ${(err as Error).message}`);
     }
   }
 

@@ -20,7 +20,7 @@
 //
 // Usage: node tools/audit.js [n] [dataset]
 
-import { loadModels, facesInImage, distance } from './faces.js';
+import { loadModels, facesInImage, minDistance, distance, type Embedding, type TargetArtifact } from './faces.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -36,7 +36,12 @@ const startOffset = Number(process.argv[4] ?? 0);
 const artifactFile = process.argv[5] ?? 'extension/public/targets.json';
 const outFile = `tools/out/audit-${dataset.split('/').pop()}-${startOffset}.json`;
 
-async function fetchPage(offset) {
+interface AuditRow {
+  index: number;
+  src: string;
+}
+
+async function fetchPage(offset: number): Promise<AuditRow[] | null> {
   const url =
     `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(dataset)}` +
     `&config=default&split=train&offset=${offset}&length=${PAGE}`;
@@ -44,26 +49,19 @@ async function fetchPage(offset) {
     try {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      const json = (await res.json()) as { rows: Array<{ row: { image: { src: string } } }> };
       return json.rows.map((r, i) => ({ index: offset + i, src: r.row.image.src }));
     } catch (err) {
       if (attempt === 6) return null;
       await new Promise((r) => setTimeout(r, Math.min(30000, 1000 * 2 ** attempt)));
     }
   }
+  // Unreachable: the final attempt always returns. Present so the signature holds.
+  return null;
 }
 
-const minDistance = (emb, set) => {
-  let best = Infinity;
-  for (const e of set) {
-    const d = distance(emb, e);
-    if (d < best) best = d;
-  }
-  return best;
-};
-
 async function main() {
-  const artifact = JSON.parse(await fs.readFile(artifactFile, 'utf8'));
+  const artifact = JSON.parse(await fs.readFile(artifactFile, 'utf8')) as TargetArtifact;
   const { threshold, margin } = artifact.rule;
   const targets = artifact.target;
   console.log(`Auditing ${n} faces from ${dataset} starting at row ${startOffset}`);
@@ -71,7 +69,7 @@ async function main() {
 
   await loadModels();
 
-  const kept = [];
+  const kept: Array<{ index: number; embedding: Embedding }> = [];
   let scanned = 0;
   let noFace = 0;
   let tooSmall = 0;
@@ -88,9 +86,13 @@ async function main() {
 
     for (let i = 0; i < rows.length && kept.length < n; i++) {
       scanned++;
-      if (!buffers[i]) continue;
+      // Bound to a local so the null check narrows: TypeScript cannot carry a
+      // guard across two separate index accesses.
+      const buf = buffers[i];
+      const row = rows[i];
+      if (!buf) continue;
       try {
-        const faces = await facesInImage(buffers[i], `row-${rows[i].index}`);
+        const faces = await facesInImage(buf, `row-${row.index}`);
         if (!faces.length) {
           noFace++;
           continue;
@@ -104,7 +106,7 @@ async function main() {
           dupes++;
           continue;
         }
-        kept.push({ index: rows[i].index, embedding: best.embedding });
+        kept.push({ index: row.index, embedding: best.embedding });
       } catch {
         /* skip undecodable rows */
       }
@@ -118,7 +120,7 @@ async function main() {
     .sort((a, b) => a.d - b.d);
 
   const hard = artifact.hardNegatives ?? [];
-  const passes = (k, d) =>
+  const passes = (k: { embedding: Embedding }, d: number): boolean =>
     d < threshold && (margin === 0 || hard.length === 0 || d + margin < minDistance(k.embedding, hard));
   const hits = kept
     .map((k) => ({ k, d: minDistance(k.embedding, targets) }))
